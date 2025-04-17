@@ -51,6 +51,12 @@ impl Lease {
         // TODO retries, logs?
         let _ = client.delete_lease(key, *lease_v).await;
     }
+
+    /// Get the unique UUID identifier for this lease instance.
+    /// This UUID changes each time the lease is successfully extended.
+    pub async fn lease_v(&self) -> Uuid {
+        *self.key_lease_v.1.lock().await
+    }
 }
 
 fn start_periodicly_extending(lease: &Lease) {

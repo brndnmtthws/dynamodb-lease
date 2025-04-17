@@ -10,20 +10,44 @@ use aws_sdk_dynamodb::{
     },
 };
 use std::time::Duration;
+use testcontainers_modules::testcontainers::{core::IntoContainerPort, ContainerAsync};
+use testcontainers_modules::{dynamodb_local::DynamoDb, testcontainers::runners::AsyncRunner};
+use tokio::sync::OnceCell;
 
 /// Test wait timeout, generally long enough that something has probably gone wrong.
 pub const TEST_WAIT: Duration = Duration::from_secs(4);
 
-/// Config for localhost dynamodb.
-pub async fn localhost_dynamodb() -> aws_sdk_dynamodb::Client {
+// Use OnceCell for efficiency: start the container & create client once for all tests.
+// The container will be stopped automatically when the test process exits.
+static DYNAMODB_INSTANCE: OnceCell<ContainerAsync<DynamoDb>> = OnceCell::const_new();
+
+/// Gets the test dynamodb client and container handle, initializing it on first call.
+pub async fn get_test_db() -> (aws_sdk_dynamodb::Client, &'static ContainerAsync<DynamoDb>) {
+    let instance = DYNAMODB_INSTANCE
+        .get_or_init(|| async {
+            DynamoDb::default()
+                .start()
+                .await
+                .expect("failed to start dynamodb local container")
+        })
+        .await;
+
+    let host = instance.get_host().await.expect("failed to get host");
+    let host_port = instance
+        .get_host_port_ipv4(8000.tcp())
+        .await
+        .expect("failed to get host port");
+
     let conf = aws_config::defaults(BehaviorVersion::latest())
-        .region("eu-west-1")
+        .region("us-east-1")
         .load()
         .await;
     let conf = aws_sdk_dynamodb::config::Builder::from(&conf)
-        .endpoint_url("http://localhost:8000")
+        .endpoint_url(format!("http://{}:{}", host, host_port))
         .build();
-    aws_sdk_dynamodb::Client::from_conf(conf)
+    let client = aws_sdk_dynamodb::Client::from_conf(conf);
+
+    (client, instance)
 }
 
 /// Create the table, with "key" as a hash key, if it doesn't exist.
@@ -58,7 +82,7 @@ pub async fn create_lease_table(table_name: &str, client: &aws_sdk_dynamodb::Cli
         }
         Err(e) => Err(e),
     }
-    .expect("dynamodb create_table failed: Did you run scripts/init-test.sh ?");
+    .expect("dynamodb create_table failed");
 
     let ttl_update = client
         .update_time_to_live()
